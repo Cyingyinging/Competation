@@ -1,2 +1,2 @@
-# Competation
+# Competition
 Some competition pipeline
