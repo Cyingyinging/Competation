@@ -6,8 +6,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 
-def add_time_features(data):
-    """添加时间特征"""
+def add_features(data):
+    """添加特征"""
     # 创建新的DataFrame保留原始索引
     df_features = pd.DataFrame(index=data.index)
     df_features['V'] = data['V']  # 保留原始流量值
@@ -59,7 +59,16 @@ def add_time_features(data):
     
     # # 添加前一天同一时间点的值
     # df_features['lag_1d'] = data['V'].shift(24)
+    # 计算差分特征
+    df_features['diff_1'] = data['V'].diff(1)  # 一阶差分
+    df_features['diff_24'] = data['V'].diff(24)  # 7天前的差分（如果是按小时数据）
     
+    # 计算滚动均值去趋势
+    df_features['trend_12h'] = data['V'].rolling(window=12, min_periods=1).mean()
+    df_features['trend_24h'] = data['V'].rolling(window=24, min_periods=1).mean()
+    
+    df_features['detrended_12h'] = df_features['V'] - df_features['trend_12h']
+    df_features['detrended_24h'] = df_features['V'] - df_features['trend_24h']
     # 填充NaN值
     df_features = df_features.fillna(method='bfill').fillna(method='ffill')
     
@@ -117,15 +126,15 @@ def load_and_preprocess_data(file_path):
     print(f"处理后 - 负值数量: {neg_count_after}, 零值数量: {zero_count_after}")
     
     # 添加时间特征
-    print("添加时间特征...")
-    data = add_time_features(data)
+    print("添加其他特征...")
+    data = add_features(data)
     print(f"添加特征后的数据形状: {data.shape}, 特征列: {data.columns.tolist()}")
     
     # 按年份划分数据
-    train_val_data = data[data.index.year < 2019]
-    test_data = data[data.index.year == 2019]
+    # train_val_data = data[data.index.year < 2019]
+    # test_data = data[data.index.year == 2019]
     
-    return train_val_data, test_data
+    return data
 
 def create_sequences(data, time_step, horizon=1):
     """创建时间序列样本"""
@@ -139,36 +148,38 @@ def create_sequences(data, time_step, horizon=1):
 def prepare_data(file_path, time_step, horizon, batch_size=32, val_ratio=0.2):
     """完整的数据准备流程"""
     # 1. 加载和预处理数据
-    train_val_data, test_data = load_and_preprocess_data(file_path)
+    data = load_and_preprocess_data(file_path)
     
-    # 2. 只对V列进行标准化
-    # 提取V列
-    train_val_V = train_val_data[['V']]
-    test_V = test_data[['V']]
+    # 2. 标准化除了V列以外的所有列
+    # 提取特征列（假设除了'V'以外的所有列都是特征）
+    feature_columns = data.columns.difference(['V'])
+    # print("吞吞吐吐",data[feature_columns].shape)
+    # # 对特征列进行标准化
+    all_scaler = StandardScaler().fit(data[feature_columns])
+    # data[feature_columns] = all_scaler.transform(data[feature_columns])
+    # test_data[feature_columns] = all_scaler.transform(test_data[feature_columns])
     
-    # 对V列进行标准化
-    scaler = StandardScaler().fit(train_val_V)
-    train_val_data['V'] = scaler.transform(train_val_V)
-    test_data['V'] = scaler.transform(test_V)
-    
-    # 转换为numpy数组
-    train_val_scaled = train_val_data.values
-    test_scaled = test_data.values
+    # 3. 转换为numpy数组
+    train_val_scaled = data.values
+    # test_scaled = test_data.values
     
     # 3. 创建序列
     print("创建训练验证序列...")
     X_train_val, y_train_val = create_sequences(train_val_scaled, time_step, horizon)
     print(f"训练验证序列形状: X={X_train_val.shape}, y={y_train_val.shape}")
     
-    print("创建测试序列...")
-    X_test, y_test = create_sequences(test_scaled, time_step, horizon)
-    print(f"测试序列形状: X={X_test.shape}, y={y_test.shape}")
+    # print("创建测试序列...")
+    # X_test, y_test = create_sequences(test_scaled, time_step, horizon)
+    # print(f"测试序列形状: X={X_test.shape}, y={y_test.shape}")
     
-    # 4. 随机划分训练集和验证集
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train_val, y_train_val, test_size=val_ratio, random_state=42)
+    # 4. 按顺序划分训练集和验证集
+    val_size = int(len(X_train_val) * val_ratio)
+    X_train = X_train_val[:-val_size]
+    X_val = X_train_val[-val_size:]
+    y_train = y_train_val[:-val_size] 
+    y_val = y_train_val[-val_size:]
     
-    print(f"训练集: {X_train.shape, y_train.shape}, 验证集: {X_val.shape, y_val.shape}, 测试集: {X_test.shape, y_test.shape}")
+    print(f"训练集: {X_train.shape, y_train.shape}, 验证集: {X_val.shape, y_val.shape}")
     
     # 5. 创建DataLoader
     # 调整张量形状为 (batch, features, seq_len)
@@ -180,37 +191,27 @@ def prepare_data(file_path, time_step, horizon, batch_size=32, val_ratio=0.2):
         torch.tensor(X_val, dtype=torch.float32).permute(0, 2, 1),
         torch.tensor(y_val, dtype=torch.float32)
     )
-    test_dataset = TensorDataset(
-        torch.tensor(X_test, dtype=torch.float32).permute(0, 2, 1),
-        torch.tensor(y_test, dtype=torch.float32)
-    )
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
     # 6. 返回数据加载器、scaler和原始数据
     return {
         'train': train_loader,
         'val': val_loader,
-        'test': test_loader
-    }, scaler, {
+    }, all_scaler, {
         'X_train': X_train,
         'y_train': y_train,
         'X_val': X_val,
         'y_val': y_val,
-        'X_test': X_test,
-        'y_test': y_test,
-        'test_scaled': test_scaled,
-        'feature_names': train_val_data.columns.tolist()  # 保存特征名称
+        'feature_names': data.columns.tolist()  # 保存特征名称
     }
-
 def save_preprocessed_data(raw_data, save_dir="preprocessed"):
     """保存预处理数据"""
     Path(save_dir).mkdir(exist_ok=True)
     
     # 保存数据
-    for split in ['X_train', 'y_train', 'X_val', 'y_val', 'X_test', 'y_test']:
+    for split in ['X_train', 'y_train', 'X_val', 'y_val']:
         np.save(f"{save_dir}/{split}.npy", raw_data[split])
     
     # 保存特征名称
@@ -228,7 +229,7 @@ if __name__ == "__main__":
     BATCH_SIZE = 64
     
     # 完整数据准备流程
-    dataloaders, scaler, raw_data = prepare_data(
+    dataloaders, all_scaler,raw_data = prepare_data(
         file_path="./train/A-入库流量(2014-2019).csv",
         time_step=TIME_STEP,
         horizon=HORIZON,
@@ -241,13 +242,12 @@ if __name__ == "__main__":
     
     # 保存scaler
     import joblib
-    joblib.dump(scaler, "preprocessed/scaler.joblib")
+    joblib.dump(all_scaler, "preprocessed/all_scaler.joblib")
     print()
     # 打印数据集信息
     print(f"训练集批次: {len(dataloaders['train'])}")
     print(f"验证集批次: {len(dataloaders['val'])}")
-    print(f"测试集批次: {len(dataloaders['test'])}")
-    print(f"标准化参数：{scaler.mean_}")
+    print(f"标准化参数：{all_scaler.mean_}")
     # 检查一个批次的形状
     for x, y in dataloaders['train']:
         print(f"输入批次形状: {x.shape}")  # 应该是 [batch_size, features, time_step]

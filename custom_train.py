@@ -86,8 +86,8 @@ def train_model(epochs, train_loader, val_loader, device, model, criterion, opti
                 print(f"早停：{patience}个epoch没有改善")
                 break
 
-from data_prepration import prepare_data
-from predict import *
+from data_prepration_new import *
+from predict_2 import *
 
 if __name__ == '__main__':
     # 数据集构建
@@ -98,57 +98,40 @@ if __name__ == '__main__':
 
     # 数据加载与划分
     # 完整数据准备流程
-    dataloaders, scaler, raw_data = prepare_data(
-        file_path="./train/A-入库流量(2014-2019).csv",
-        time_step=TIME_STEP,
+    dataloaders, scaler,raw_data = create_dataset(
+        time_Step=TIME_STEP,
         horizon=HORIZON,
         batch_size=BATCH_SIZE,
-        val_ratio=0.2
-    )
+        val_ratio=0.2)
 
     # 保存到模型目录
     model_dir = 'checkpoints'
     os.makedirs(model_dir,exist_ok=True)
 
-    train_loader, val_loader, test_loader = dataloaders['train'], dataloaders['val'] , dataloaders['test']
+    train_loader, val_loader = dataloaders['train'], dataloaders['val']
 
     # 训练模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    epochs = 200
+    epochs = 500
 
-    c_in, c_out = 13, HORIZON
+    c_in, c_out = 17, HORIZON
 
-    model = MLP(c_in, c_out, TIME_STEP).to(device)
-    # seq_len = 60
-    # pred_dim = 20
+    model = LSTM(c_in, c_out,hidden_size=128, n_layers=4).to(device)
 
-    # arch_config=dict(
-    #         n_layers=3,  # number of encoder layers
-    #         n_heads=16,  # number of heads
-    #         d_model=128,  # dimension of model
-    #         d_ff=256,  # dimension of fully connected network (fcn)
-    #         attn_dropout=0.,
-    #         dropout=0.2,  # dropout applied to all linear layers in the encoder
-    #         patch_len=16,  # patch_len
-    #         stride=8,  # stride
-    #     )
-
-    # model = PatchTST(c_in, c_out, seq_len, pred_dim, **arch_config)
 
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-2)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
     # train_model(epochs, train_loader, val_loader, device, model, criterion, optimizer, scheduler=scheduler,output_file=model_dir)
     # 在训练完成后，进行评估和预测
 
-    future_predictions = predict_future(
+    predict_future(
         model_path=model_dir + '/' + 'best_model.pth',
         model=model,
-        scaler=scaler,
         device=device,
         time_step=TIME_STEP,
         horizon=HORIZON,
-        test_data = raw_data['test_scaled'],
-        feature_names=raw_data['feature_names']
+        test_data = raw_data["X_val"],
+        future_dates = raw_data["test_data"]
     )
-    print(scaler.mean_)
+    # # print(scaler.mean_)
